@@ -1,73 +1,68 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
 const cors = require('cors');
+const puppeteer = require('puppeteer');
 
 const app = express();
-const port = 8080;
+const port = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
 
 app.post('/monitor', async (req, res) => {
   const { url } = req.body;
-  const browser = await puppeteer.launch();
-  const page = await browser.newPage();
-  await page.setRequestInterception(true);
 
-  const requests = [];
-
-  page.on('request', async (request) => {
-    if (request.method() === 'OPTIONS') {
-      // Ignore preflight requests
-      request.continue();
-      return;
-    }
-
-    const startTime = Date.now();
-
-    request.continue();
-
-    page.on('requestfinished', async (finishedRequest) => {
-      if (finishedRequest._requestId === request._requestId) {
-        const endTime = Date.now();
-        const duration = endTime - startTime;
-
-        try {
-          const response = await finishedRequest.response();
-          const responseBody = await response.text();
-
-          requests.push({
-            url: request.url(),
-            headers: request.headers(),
-            method: request.method(),
-            postData: request.postData(),
-            responseHeaders: response.headers(),
-            responseStatus: response.status(),
-            responseBody,
-            timing: {
-              startTime,
-              endTime,
-              duration,
-            },
-          });
-        } catch (error) {
-          console.error(`Error loading body for request ${request.url()}:`, error.message);
-        }
-      }
-    });
-  });
-
-  try {
-    await page.goto(url, { waitUntil: 'networkidle0' });
-  } catch (error) {
-    console.error(`Error navigating to ${url}:`, error.message);
-  } finally {
-    await browser.close();
+  if (!url) {
+    return res.status(400).send('URL is required');
   }
 
-  res.json(requests);
+  try {
+    const browser = await puppeteer.launch({
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      headless: true,
+      executablePath: process.env.CHROME_BIN || null // Ensure Chrome executable is found
+    });
+    const page = await browser.newPage();
+    await page.goto(url);
+
+    const requests = [];
+    page.on('requestfinished', async (request) => {
+      const response = await request.response();
+      const requestData = {
+        url: request.url(),
+        method: request.method(),
+        headers: request.headers(),
+        postData: request.postData(),
+        response: await response.text(),
+        responseStatus: response.status(),
+        timing: null,
+      };
+      requests.push(requestData);
+    });
+
+    // Wait for a few seconds to collect the requests
+    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 10000)));
+
+    // Collect request timing data using performance API
+    const performanceEntries = await page.evaluate(() => performance.getEntriesByType('resource'));
+    performanceEntries.forEach(entry => {
+      const request = requests.find(req => req.url === entry.name);
+      if (request) {
+        request.timing = {
+          startTime: entry.startTime,
+          duration: entry.duration,
+        };
+      }
+    });
+
+    await browser.close();
+
+    res.json(requests);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send('Error monitoring network requests');
+  }
 });
 
 app.listen(port, () => {
-  console.log(`Server running at http://localhost:${port}`);
+  console.log(`Server is running on port ${port}`);
 });
