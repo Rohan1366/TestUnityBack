@@ -7,7 +7,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node index.js",
     "dev": "nodemon index.js",
-     "postinstall": "apt-get update && apt-get install -y chromium-browser"
+    "postinstall": "npx puppeteer install"
   },
   "keywords": [],
   "author": "",
